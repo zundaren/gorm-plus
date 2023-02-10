@@ -18,6 +18,7 @@
 package gplus
 
 import (
+	"context"
 	"github.com/acmestack/gorm-plus/constants"
 	"gorm.io/gorm"
 	"gorm.io/gorm/schema"
@@ -32,6 +33,16 @@ func Init(db *gorm.DB) {
 	gormDb = db
 }
 
+type BaseDao[T any] struct {
+	db *gorm.DB
+}
+
+func NewBaseDao[T any]() *BaseDao[T] {
+	return &BaseDao[T]{
+		db: gormDb,
+	}
+}
+
 type Page[T any] struct {
 	Current int
 	Size    int
@@ -43,124 +54,127 @@ func NewPage[T any](current, size int) *Page[T] {
 	return &Page[T]{Current: current, Size: size}
 }
 
-func Insert[T any](entity *T) *gorm.DB {
-	resultDb := gormDb.Create(entity)
-	return resultDb
+func (d BaseDao[T]) Db() *gorm.DB {
+	return d.db
 }
 
-func InsertBatch[T any](entities []*T) *gorm.DB {
+func (d BaseDao[T]) WithCtx(ctx context.Context) BaseDao[T] {
+	return BaseDao[T]{db: d.db.WithContext(ctx)}
+}
+
+func (d BaseDao[T]) Insert(entity *T) *gorm.DB {
+	return d.db.Create(entity)
+}
+
+func (d BaseDao[T]) InsertBatch(entities []*T) *gorm.DB {
 	if len(entities) == 0 {
 		return gormDb
 	}
-	resultDb := gormDb.CreateInBatches(entities, defaultBatchSize)
-	return resultDb
+	return d.db.CreateInBatches(entities, defaultBatchSize)
 }
 
-func InsertBatchSize[T any](entities []*T, batchSize int) *gorm.DB {
+func (d BaseDao[T]) InsertBatchSize(entities []*T, batchSize int) *gorm.DB {
 	if len(entities) == 0 {
 		return gormDb
 	}
 	if batchSize <= 0 {
 		batchSize = defaultBatchSize
 	}
-	resultDb := gormDb.CreateInBatches(entities, batchSize)
-	return resultDb
+	return d.db.CreateInBatches(entities, batchSize)
 }
 
-func DeleteById[T any](id any) *gorm.DB {
+func (d BaseDao[T]) DeleteById(id any) *gorm.DB {
 	var entity T
-	resultDb := gormDb.Where(getPkColumnName[T](), id).Delete(&entity)
-	return resultDb
+	return d.db.Where(getPkColumnName[T](), id).Delete(&entity)
 }
 
-func DeleteByIds[T any](ids any) *gorm.DB {
+func (d BaseDao[T]) DeleteByIds(ids any) *gorm.DB {
 	q, _ := NewQuery[T]()
 	q.In(getPkColumnName[T](), ids)
-	resultDb := Delete[T](q)
-	return resultDb
+	return d.Delete(q)
 }
 
-func Delete[T any](q *Query[T]) *gorm.DB {
+func (d BaseDao[T]) Delete(q *Query[T]) *gorm.DB {
 	var entity T
-	resultDb := gormDb.Where(q.QueryBuilder.String(), q.QueryArgs...).Delete(&entity)
-	return resultDb
+	return d.db.Where(q.QueryBuilder.String(), q.QueryArgs...).Delete(&entity)
 }
 
-func UpdateById[T any](entity *T) *gorm.DB {
-	resultDb := gormDb.Model(entity).Updates(entity)
-	return resultDb
+func (d BaseDao[T]) UpdateById(entity *T) *gorm.DB {
+	return d.db.Model(entity).Updates(entity)
 }
 
-func Update[T any](q *Query[T]) *gorm.DB {
-	resultDb := gormDb.Model(new(T)).Where(q.QueryBuilder.String(), q.QueryArgs...).Updates(&q.UpdateMap)
-	return resultDb
+func (d BaseDao[T]) Update(q *Query[T]) *gorm.DB {
+	return d.db.Model(new(T)).
+		Where(q.QueryBuilder.String(), q.QueryArgs...).
+		Updates(&q.UpdateMap)
 }
 
-func SelectById[T any](id any) (*T, *gorm.DB) {
+func (d BaseDao[T]) SelectById(id any) (*T, *gorm.DB) {
 	q, _ := NewQuery[T]()
 	q.Eq(getPkColumnName[T](), id)
 	var entity T
-	resultDb := buildCondition(q)
+	resultDb := buildCondition(d.db, q)
 	return &entity, resultDb.Limit(1).Find(&entity)
 }
 
-func SelectByIds[T any](ids any) ([]*T, *gorm.DB) {
+func (d BaseDao[T]) SelectByIds(ids any) ([]*T, *gorm.DB) {
 	q, _ := NewQuery[T]()
 	q.In(getPkColumnName[T](), ids)
-	return SelectList[T](q)
+	return d.SelectList(q)
 }
 
-func SelectOne[T any](q *Query[T]) (*T, *gorm.DB) {
+func (d BaseDao[T]) SelectOne(q *Query[T]) (*T, *gorm.DB) {
 	var entity T
-	resultDb := buildCondition(q)
+	resultDb := buildCondition(d.db, q)
 	return &entity, resultDb.Limit(1).Find(&entity)
 }
 
-func SelectList[T any](q *Query[T]) ([]*T, *gorm.DB) {
-	resultDb := buildCondition(q)
+func (d BaseDao[T]) SelectList(q *Query[T]) ([]*T, *gorm.DB) {
+	resultDb := buildCondition(d.db, q)
 	var results []*T
 	resultDb.Find(&results)
 	return results, resultDb
 }
 
-func SelectListModel[T any, R any](q *Query[T]) ([]*R, *gorm.DB) {
-	resultDb := buildCondition(q)
-	var results []*R
-	resultDb.Scan(&results)
-	return results, resultDb
-}
-
-func SelectPage[T any](page *Page[T], q *Query[T]) (*Page[T], *gorm.DB) {
-	total, countDb := SelectCount[T](q)
+func (d BaseDao[T]) SelectPage(page *Page[T], q *Query[T]) (*Page[T], *gorm.DB) {
+	total, countDb := d.SelectCount(q)
 	if countDb.Error != nil {
 		return page, countDb
 	}
 	page.Total = total
-	resultDb := buildCondition(q)
+	resultDb := buildCondition(d.db, q)
 	var results []*T
 	resultDb.Scopes(paginate(page)).Find(&results)
 	page.Records = results
 	return page, resultDb
 }
 
-func SelectPageModel[T any, R any](page *Page[R], q *Query[T]) (*Page[R], *gorm.DB) {
-	total, countDb := SelectCount[T](q)
+func (d BaseDao[T]) SelectCount(q *Query[T]) (int64, *gorm.DB) {
+	var count int64
+	resultDb := buildCondition(d.db, q)
+	resultDb.Count(&count)
+	return count, resultDb
+}
+
+func SelectListModel[T any, R any](db *gorm.DB, q *Query[T]) ([]*R, *gorm.DB) {
+	resultDb := buildCondition(db, q)
+	var results []*R
+	resultDb.Scan(&results)
+	return results, resultDb
+}
+
+func SelectPageModel[T any, R any](db *gorm.DB, page *Page[R], q *Query[T]) (*Page[R], *gorm.DB) {
+	var total int64
+	countDb := buildCondition(db, q).Count(&total)
 	if countDb.Error != nil {
 		return page, countDb
 	}
 	page.Total = total
-	resultDb := buildCondition(q)
+	resultDb := buildCondition(db, q)
 	var results []*R
 	resultDb.Scopes(paginate(page)).Scan(&results)
 	page.Records = results
 	return page, resultDb
-}
-
-func SelectCount[T any](q *Query[T]) (int64, *gorm.DB) {
-	var count int64
-	resultDb := buildCondition(q)
-	resultDb.Count(&count)
-	return count, resultDb
 }
 
 func paginate[T any](p *Page[T]) func(db *gorm.DB) *gorm.DB {
@@ -178,8 +192,8 @@ func paginate[T any](p *Page[T]) func(db *gorm.DB) *gorm.DB {
 	}
 }
 
-func buildCondition[T any](q *Query[T]) *gorm.DB {
-	resultDb := gormDb.Model(new(T))
+func buildCondition[T any](db *gorm.DB, q *Query[T]) *gorm.DB {
+	resultDb := db.Model(new(T))
 	if q != nil {
 		if len(q.DistinctColumns) > 0 {
 			resultDb.Distinct(q.DistinctColumns)
